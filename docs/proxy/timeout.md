@@ -305,6 +305,50 @@ print(response)
 </Tabs>
 
 
+### Total timeout for the whole request
+
+`timeout` and `x-litellm-timeout` bound each upstream attempt on its own, so a request that retries or falls back can run for several times that long. Set `total_timeout` (or the `x-litellm-total-timeout` header on the proxy) to bound the whole request instead, in seconds. It covers every attempt, every retry sleep (including a provider's `Retry-After`) and every fallback hop, counted from when the proxy starts handling the request.
+
+When the time left cannot cover the next retry sleep or fallback hop, LiteLLM stops and returns the last provider error as it is, for example a 503 with its `Retry-After` header, instead of starting work the caller will not wait for. Each attempt's own `timeout` and `stream_timeout` are lowered to the time left, so an attempt in flight still ends on time. If the time runs out before an attempt calls the provider, the request fails with a 408. A timeout the total timeout caused is never held against the deployment, so it does not count toward cooldowns.
+
+For a stream, `total_timeout` bounds the time until the first chunk. Once chunks are flowing, the stream runs under `stream_timeout` as usual.
+
+`total_timeout` only ever shortens a request. It never raises a deployment's own timeouts or retry count. A value that is not a positive number of seconds is rejected with a 400.
+
+<Tabs>
+<TabItem value="sdk" label="SDK">
+
+```python
+from litellm import Router
+
+router = Router(model_list=[{...}], num_retries=3)
+
+response = await router.acompletion(
+    model="{{openai_small}}",
+    messages=[{"role": "user", "content": "what color is red"}],
+    total_timeout=10,
+)
+```
+
+</TabItem>
+<TabItem value="proxy" label="PROXY">
+
+```shell
+curl --location 'http://0.0.0.0:4000/chat/completions' \
+     --header 'Content-Type: application/json' \
+     --header 'Authorization: Bearer sk-1234' \
+     --header 'x-litellm-total-timeout: 10' \
+     --data-raw '{
+        "model": "{{openai_small}}",
+        "messages": [{"role": "user", "content": "what color is red"}]
+     }'
+```
+
+</TabItem>
+</Tabs>
+
+The proxy does not read the OpenAI SDK's own `x-stainless-timeout` header. The SDK sends it on every request with a default of 600 seconds and applies it to each of its own attempts, so it does not mean a limit for the whole request. To use one, send `x-litellm-total-timeout` through the SDK's `extra_headers`.
+
 ## Testing timeout handling 
 
 To test if your retry/fallback logic can handle timeouts, you can set `mock_timeout=True` for testing. 
